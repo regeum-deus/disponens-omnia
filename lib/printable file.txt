@@ -1,0 +1,679 @@
+-------Transformations---------
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/quaternion.hpp>
+
+namespace rend {
+	enum class TYPE {
+		translation,
+		identity,
+		scaling,
+		rotation,
+	};
+
+	extern float FOV;
+	extern const glm::vec3 UP;
+
+	glm::mat4 fromquat(glm::quat quaternion);
+	glm::vec4 transform(glm::vec4 vec, glm::vec4 direction, rend::TYPE t);
+	glm::vec4 full_transform(glm::vec4 vec, glm::vec4 tdirection, glm::vec3 rdirection, glm::vec4 sdirection);
+
+	class Camera {
+	public:
+		Camera(glm::vec3 position, float a, float n, float f);
+		glm::vec3 position;
+		glm::mat4 ViewMatrix;
+		glm::mat4 projectionMatrix;
+		float aspect;
+		float nearclip;
+		float farclip;
+		void translate(glm::vec3 vec);
+		void lookat(glm::vec3 target);
+		void perspective();
+	};
+
+	glm::mat4 MVPcompute(Camera c, glm::mat4 vec3model);
+
+	/*IMPORTANT NOTE
+		Okay so to get the projections to work you
+		do the following:
+			rend::Camera c(<vec3>, <float>, <float>, <float>);
+			c.perspective();
+			c.lookat(<vec3>);
+			glm::mat4 Model = glm::mat4(1.0f);
+
+			//translate the model how you want here
+
+			glm::mat4 mvp = c.projectionMatrix * c.ViewMatrix * Model;
+
+			//give the mvp to the program
+			GLuint MatrixID = glGetUniformLocation(<GLuint programID>, "mvp");
+			glUniformMatrix4fv(MatrixID, 1, GL_FALSE, &mvp[0][0]);
+
+			
+			//----------------
+			//in vertex shader
+			//----------------
+			//layout(location = 0) in vec3 model;
+			//
+			//uniform mat4 mvp;
+			//void main() {
+			//	gl_Position = mvp * vec4(model, 1);
+			//}
+
+	*/
+}
+
+--cpp--
+
+#include "transformation.h"
+
+
+const glm::vec3 rend::UP = glm::vec3(0.0f, 1.0f, 0.0f);
+float rend::FOV = 45.0f;
+
+
+glm::mat4 rend::fromquat(glm::quat quaternion) {
+	glm::mat4 mat = glm::toMat4(quaternion);
+	return mat;
+}
+
+glm::vec4 rend::transform(glm::vec4 vec, glm::vec4 direction, rend::TYPE t) {
+	glm::vec4 transformedvec;
+	glm::mat4 mat;
+	glm::vec3 v(direction);
+	switch(t) {
+	case rend::TYPE::translation:
+		mat = glm::translate(glm::mat4(), glm::vec3(direction));
+		break;
+	case rend::TYPE::identity:
+		mat = glm::mat4(1.0f);
+		break;
+	case rend::TYPE::scaling:
+		mat = glm::scale(glm::mat4(), v);
+		break;
+	case rend::TYPE::rotation:
+		mat = fromquat(glm::quat(v));
+		break;
+	}
+
+	transformedvec = mat * vec;
+	return transformedvec;
+}
+
+glm::vec4 rend::full_transform(glm::vec4 vec, glm::vec4 tdirection, glm::vec3 rdirection, glm::vec4 sdirection) {
+	glm::mat4 smat;
+	
+	glm::vec3 v(sdirection);
+	smat = glm::scale(glm::mat4(), v);
+
+	glm::mat4 rmat = fromquat(glm::quat(rdirection));
+
+	glm::mat4 tmat = glm::translate(glm::mat4(), glm::vec3(tdirection));
+	
+	glm::mat4 modelmat = tmat * rmat * smat;
+	return modelmat * vec;	
+}
+
+rend::Camera::Camera(glm::vec3 position, float a, float n, float f) {
+	this->aspect = a;
+	this->nearclip = n;
+	this->farclip = f;
+	this->position = position;
+}
+void rend::Camera::translate(glm::vec3 vec) {
+	this->position += vec;
+	this->ViewMatrix = glm::translate(glm::mat4(), this->position);
+}
+
+void rend::Camera::lookat(glm::vec3 target) {
+	this->ViewMatrix = glm::lookAt(this->position, target, rend::UP);
+}
+
+void rend::Camera::perspective() {
+	this->projectionMatrix = glm::perspective(glm::radians(FOV), this->aspect, this->nearclip, this->farclip);
+}
+
+glm::mat4 rend::MVPcompute(rend::Camera c, glm::mat4 vec3model) {
+	glm::mat4 MVP = c.projectionMatrix * c.ViewMatrix * vec3model;
+	return MVP;
+}
+
+----------Textures-------------
+
+#include <iostream>
+#include <string.h>
+
+#include "../include/glad/glad.h"
+#include <GLFW/glfw3.h>
+
+#include <glm/glm.hpp>
+
+#include "stb_image.h"
+
+namespace rend {
+	GLenum unit(int index);
+	struct image {
+		int width = 0;
+		int height = 0;
+		int nrChannels = 0;
+		unsigned char *data;
+	};
+	class Texture {
+	public:
+		GLenum textureUnit;
+		image image_data;
+		unsigned int ID;
+		Texture(std::string image_path, int unit);
+		Texture();
+	};
+}
+
+--cpp--
+
+#include "textures.h"
+
+GLenum rend::unit(int index) {
+	switch(index) {
+	case 0:
+		return GL_TEXTURE0;
+	case 1:
+		return GL_TEXTURE1;
+	case 2:
+		return GL_TEXTURE2;
+	case 3:
+		return GL_TEXTURE3;
+	case 4:
+		return GL_TEXTURE4;
+	}
+	return -5;
+}
+
+rend::Texture::Texture(std::string image_path, int unit) {
+	stbi_set_flip_vertically_on_load(true);
+	this->textureUnit = rend::unit(unit);
+	this->image_data.data = stbi_load(image_path.c_str(), &this->image_data.width, &this->image_data.height, &this->image_data.nrChannels, 0);
+	glGenTextures(1, &this->ID);
+	glBindTexture(GL_TEXTURE_2D, this->ID);
+	
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	if(this->image_data.data)  {
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, this->image_data.width, this->image_data.height, 0, GL_RGB, GL_UNSIGNED_BYTE, this->image_data.data);
+		glGenerateMipmap(GL_TEXTURE_2D);
+	} else {
+		std::cout << "failed to load texture" << std::endl;
+	}
+
+	stbi_image_free(this->image_data.data);
+}
+
+rend::Texture::Texture() {
+}
+
+------Shaders------
+#include <string>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+
+#include "../include/glad/glad.h"
+#include <GLFW/glfw3.h>
+
+#include <glm/glm.hpp>
+
+namespace rend {
+	class Shader {
+	public:
+		unsigned int ID;
+		Shader(const char *vertexPath, const char *fragmentPath);
+		Shader();
+		void use();
+		void setBool(const std::string &name, bool value) const;
+		void setInt(const std::string &name, float value) const;
+		void setFloat(const std::string &name, float value) const;
+	};
+}
+
+--cp--
+
+#include "shaders.h"
+
+rend::Shader::Shader() {
+}
+
+rend::Shader::Shader(const char *vertexPath, const char *fragmentPath) {
+	std::string vertexCode;
+	std::string fragmentCode;
+	std::ifstream vShaderFile;
+	std::ifstream fShaderFile;
+
+	vShaderFile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+	fShaderFile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+	try {
+		vShaderFile.open(vertexPath); fShaderFile.open(fragmentPath);
+		std::stringstream vShaderStream, fShaderStream;
+		vShaderStream << vShaderFile.rdbuf(); fShaderStream << fShaderFile.rdbuf();
+		vShaderFile.close(); fShaderFile.close();
+		vertexCode = vShaderStream.str(); fragmentCode = fShaderStream.str();
+	} catch(std::ifstream::failure e) {
+		std:: cout << "File not successfully read" << std::endl;
+	}
+	const char *vShaderCode = vertexCode.c_str();
+	const char *fShaderCode = fragmentCode.c_str();
+	unsigned int vertex, fragment;
+	int success; char infoLog[512];
+
+	vertex = glCreateShader(GL_VERTEX_SHADER);
+	glShaderSource(vertex, 1, &vShaderCode, NULL);
+	glCompileShader(vertex);
+	glGetShaderiv(vertex, GL_COMPILE_STATUS, &success);
+	if(!success) {
+		glGetShaderInfoLog(vertex, 512, NULL, infoLog);
+		std::cout << "vertex shader compilation failed\n" << infoLog << std::endl;
+	}
+
+	fragment = glCreateShader(GL_FRAGMENT_SHADER);
+	glShaderSource(fragment, 1, &fShaderCode, NULL);
+	glCompileShader(fragment);
+	glGetShaderiv(fragment, GL_COMPILE_STATUS, &success);
+	if(!success) {
+		glGetShaderInfoLog(fragment, 512, NULL, infoLog);
+		std::cout << "fragment shader compilation failed\n" << infoLog << std::endl;
+	}
+
+	this->ID = glCreateProgram();
+	glAttachShader(ID, vertex); glAttachShader(ID, fragment);
+	glLinkProgram(ID);
+
+	glGetProgramiv(ID, GL_LINK_STATUS, &success);
+	if(!success) {
+		glGetProgramInfoLog(ID, 512, NULL, infoLog);
+		std::cout << "shader linking failed\n" << infoLog << std::endl;
+	}
+
+	glDeleteShader(vertex);
+	glDeleteShader(fragment);
+}
+void rend::Shader::use() {
+	glUseProgram(this->ID);
+}
+void rend::Shader::setBool(const std::string &name, bool value) const {
+	glUniform1i(glGetUniformLocation(this->ID, name.c_str()), (int)value);
+}
+void rend::Shader::setInt(const std::string &name, float value) const {
+	glUniform1i(glGetUniformLocation(this->ID, name.c_str()), value);
+}
+void rend::Shader::setFloat(const std::string &name, float value) const {
+	glUniform1f(glGetUniformLocation(ID, name.c_str()), value);
+}
+
+--------Models--------
+#include <iostream>
+#include <stdint.h>
+
+#include "../include/glad/glad.h"
+#include <GLFW/glfw3.h>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/quaternion.hpp>
+
+#include "shaders.h"
+#include "textures.h"
+#include "transformation.h"
+
+namespace rend {
+	class Model {
+	public:
+		glm::vec3 position = glm::vec3(0.0f, 0.0f, 0.0f);
+
+		glm::mat4 modelspace = glm::mat4(0.0f);
+
+		rend::Shader shader;
+		rend::Texture *textures;
+
+		std::string vertexpath = "./res/shaders/default.vertex";
+		std::string fragmentpath = "./res/shaders/default.fragment";
+
+		bool textured = false;
+		int texture_amount;
+
+		float *vertices; float vertex_count;
+		unsigned int *indices; float index_count;
+		unsigned int VAO, VBO, EBO;
+		
+		void shaders();
+		void render(rend::Camera c);
+		Model();
+		Model(std::string vss, std::string fss, float *verts, float vertex_count, unsigned int *indices, float index_count, bool vp, bool fp);
+		Model(std::string vss, std::string fss, float *verts, float vertex_count, unsigned int *indices, float index_count, bool vp, bool fp, int vaa, int *vas);
+
+		void texture_init(std::string *image_path, int amount);
+		void programUsage(void (*_usage)(int));
+	
+		void model_translate(glm::vec3 vec);
+	};
+}
+
+--cpp--
+
+#include "model.h"
+
+rend::Model::Model() {
+}
+
+rend::Model::Model(std::string vss, std::string fss, float *verts, float vertex_count, unsigned int *indices, float index_count, bool vp, bool fp) {
+	if(vp) {
+		this->vertexpath = vss;
+	}
+	if(fp) {
+		this->fragmentpath = fss;
+	}
+
+	this->vertices = verts; this->vertex_count = vertex_count;
+	this->indices = indices; this->index_count = index_count;
+	glGenVertexArrays(1, &this->VAO);
+	glGenBuffers(1, &this->VBO);
+	glGenBuffers(1, &this->EBO);
+
+	glBindVertexArray(this->VAO);
+
+	glBindBuffer(GL_ARRAY_BUFFER, this->VBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(float) * vertex_count, this->vertices, GL_STATIC_DRAW);
+		
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, this->EBO);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, this->index_count * sizeof(unsigned int), this->indices, GL_STATIC_DRAW);
+
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+	glEnableVertexAttribArray(0);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glBindVertexArray(0);
+}
+
+rend::Model::Model(std::string vss, std::string fss, float *verts, float vertex_count, unsigned int *indices, float index_count, bool vp, bool fp, int vaa, int *vas) {
+	if(vp) {
+		this->vertexpath = vss;
+	}
+	if(fp) {
+		this->fragmentpath = fss;
+	}
+
+	this->vertices = verts; this->vertex_count = vertex_count;
+	this->indices = indices; this->index_count = index_count;
+	glGenVertexArrays(1, &this->VAO);
+	glGenBuffers(1, &this->VBO);
+	glGenBuffers(1, &this->EBO);
+
+	glBindVertexArray(this->VAO);
+
+	glBindBuffer(GL_ARRAY_BUFFER, this->VBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(float) * vertex_count, this->vertices, GL_STATIC_DRAW);
+		
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, this->EBO);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, this->index_count * sizeof(unsigned int), this->indices, GL_STATIC_DRAW);
+
+	int vatotal = 0;
+	for(int i = 0; i < vaa; i++) {
+		vatotal += vas[i] * sizeof(float);
+	}
+
+	int stride = vatotal;
+	for(int i = 0; i < vaa; i++) {
+		int space = 0;
+		if(i != 0) {
+			for(int j = 0; j < i; j++) {
+				space += vas[j] * sizeof(float);
+				std::cout << space << std::endl;
+			}
+		}
+
+		std::cout << i << std::endl;
+		std::cout << vas[i] << std::endl;
+		std::cout << stride << std::endl;
+		std::cout << space << "\n" << std::endl;
+
+		glVertexAttribPointer(i, vas[i], GL_FLOAT, GL_FALSE, stride, (void*)(intptr_t)(space));
+		glEnableVertexAttribArray(i);
+	}
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glBindVertexArray(0);
+}
+
+void rend::Model::render(rend::Camera c) {
+	glm::mat4 mvp = c.projectionMatrix * c.ViewMatrix * modelspace;
+	
+	this->shader.use();
+	GLuint MatrixID = glGetUniformLocation(this->shader.ID, "mvp");
+	glUniformMatrix4fv(MatrixID, 1, GL_FALSE, &mvp[0][0]);
+	
+	if(this->textured) {
+		for(int i = 0; i < this->texture_amount; i++) {
+			glActiveTexture(this->textures[i].textureUnit);
+			glBindTexture(GL_TEXTURE_2D, this->textures[i].ID);
+		}
+		if(this->texture_amount == 0) {
+			this->shader.setInt("texture0", 0);
+		} else {
+			for(int i = 0; i < this->texture_amount; i++) {
+				std::stringstream s;
+				s << "texture" << i;
+				this->shader.setInt(s.str(), i);
+			}
+		}
+	}
+	glBindVertexArray(this->VAO);
+	glDrawElements(GL_TRIANGLES, this->index_count, GL_UNSIGNED_INT, (void*)0);
+	glBindVertexArray(0);
+}
+
+void rend::Model::shaders() {
+	this->shader = rend::Shader(this->vertexpath.c_str(), this->fragmentpath.c_str());
+}
+
+void rend::Model::programUsage(void (*_usage)(int)) {
+	_usage(this->shader.ID);
+}
+
+void rend::Model::texture_init(std::string *image_path, int amount) {
+	this->textures = new rend::Texture[amount];
+	for(int i = 0; i < amount; i++) {
+		this->textures[i] = rend::Texture(image_path[i], i);
+	}
+	this->texture_amount = amount;
+	this->textured = true;
+}
+
+void rend::Model::model_translate(glm::vec3 vec) {
+	this->position += vec;
+	this->modelspace = glm::translate(glm::mat4(1.0f), this->position);
+}
+
+
+
+##-----LIB_STANDARD-----##
+#include <iostream>
+
+#include "include/glad/glad.h"
+#include <GLFW/glfw3.h>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/quaternion.hpp>
+
+#include "lib/model.h"
+#include "lib/shaders.h"
+
+namespace STANDARD {
+	//variables
+	extern int width;
+	extern int height;
+	extern GLFWwindow *window;
+	std::list<rend::Camera> cameras;
+	extern int current_camera_id;
+
+	//data stuff
+	template <typename T> T get(std::list<T> _l, int _i);
+
+	//scary camera shit
+	int setupCamera();
+	void workCam(int k);
+	void loopCam();
+
+	//model stuff
+	rend::Model square(float position[2], float size[2], float r=0, float g=0, float b=0);
+
+	//basic window stuff
+	void framebuffer_size_callback(GLFWwindow *window, int width, int height);
+	void processInput(GLFWwindow *window);
+
+	void initializeWindow();
+
+	bool closed();
+	void loopSetup();
+	void loopEnd();
+	void terminate();
+
+	//input code
+	bool getKeyPressed(int key);
+	bool getKeyReleased(int key);
+}
+
+--cpp--
+
+#include "lib.h"
+
+//variable definitions
+int STANDARD::width = 800;
+int STANDARD::height = 600;
+GLFWwindow *STANDARD::window = nullptr;
+int STANDARD::current_camera_id = 0;
+
+//scary camera shit
+int STANDARD::setupCamera() {
+	rend::Camera c(glm::vec3(0.0f, 0.0f, 0.0f), STANDARD::width, STANDARD::height, 0.1, 100);
+	c.perspective();
+	c.lookat(glm::vec3(0.0f, 0.0f, 0.0f));
+	STANDARD::cameras.push_back(c);
+	return STANDARD::cameras.size() - 1;
+}
+void STANDARD::workCam(int k) {
+	STANDARD::current_camera_id = k;
+}
+void STANDARD::loopCam() {
+	get<rend::Camera>(STANDARD::cameras, STANDARD::current_camera_id).perspective();
+}
+
+//model stuff
+rend::Model square(float position[2], float size[2], float r=0, float g=0, float b=0) {
+	float tl[2] = { size[0] * posistion[0], size[1] * position[1] };
+	float bl[2] = { tl[0], tl[1] + size[1] };
+	float tr[2] = { tl[0] + size[0], tl[1] };
+	float br[2] = { bl[0] + size[0], bl[1] };
+	float vert[] = new float[24] {
+		tr[0], tr[1], 0.0f, r, g, b,
+		br[0], br[1], 0.0f, r, g, b,
+		tl[0], tl[1], 0.0f, r, g, b,
+		bl[0], bl[1], 0.0f, r, g, b,
+	};
+	unsigned int idx[] = new unsigned int[6] {
+		0,1,2
+		1,2,3
+	}
+	rend::Model ret("../res/shaders/2Dshader.vert", "../res/shaders/2Dshader.frag", vert, 24, idx, 6, true, true, 2, new int[] {3, 3});
+}
+
+//general window stuff
+void STANDARD::framebuffer_size_callback(GLFWwindow *window, int width, int height) {
+	glViewport(0, 0, width, height);
+}
+void STANDARD::processInput(GLFWwindow *window) {
+	if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+		glfwSetWindowShouldClose(window, true);
+	}
+}
+void STANDARD::initializeWindow() {
+	glfwInit();
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+	STANDARD::window = glfwCreateWindow(STANDARD::width, STANDARD::height, "GAME ENGINE RENDERER ATTEMPT 4", NULL, NULL);
+	if(STANDARD::window == NULL) {
+		std::cout << "Failed to create window" << std::endl;
+		glfwTerminate();
+		exit(-1);
+	}
+	glfwMakeContextCurrent(STANDARD::window);
+
+	if(!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+		std::cout << "Failed to initialize GLAD" << std::endl;
+		exit(-1);
+	}
+	glViewport(0, 0, 800, 600);
+}
+bool STANDARD::closed() {
+	return glfwWindowShouldClose(window);
+}
+void STANDARD::loopSetup() {
+	if(glfwWindowShouldClose(window)) {
+		
+	}
+	processInput(STANDARD::window);
+
+	glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LESS);
+}
+void STANDARD::loopEnd() {
+	glfwSwapBuffers(STANDARD::window);
+	glfwPollEvents();
+}
+void STANDARD::terminate() {
+	glfwTerminate();
+}
+
+//input
+bool STANDARD::getKeyPressed(int key) {
+	return glfwGetKey(STANDARD::window, key) == GLFW_PRESS;
+}
+bool STANDARD::getKeyReleased(int key) {
+	return glfwGetKey(STANDARD::window, key) == GLFW_RELEASE;
+}
+
+//data stuff
+template <typename T> T get(std::list<T> _l, int _i) {
+	auto l_front = _l.begin();
+	std::advance(l_front, _i);
+	return *l_front;
+}
+
+--benestd--
+#include <iostream>
+#include <string>
+
+#include "lib.h"
+
+namespace STANDARD {
+	void print(std::string str);
+}
+--cpp--
+#include "bene_standard.h"
+
+void STANDARD::print(std::string str) {
+	std::cout << str << std::endl;
+}
